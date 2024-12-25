@@ -1,0 +1,1643 @@
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.sql.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+
+public class AdminDashboard {
+    private JFrame frame;
+    private JTable fileTable;
+    private DefaultTableModel tableModel;
+    private JTable userTable;
+    private DefaultTableModel userTableModel;
+    private Connection dbConnection;
+    private int serverPort;
+    private Timer autoRefreshTimer; // Timer for automatic refreshing
+
+    public AdminDashboard(int port) throws Exception {
+        this.serverPort = port;
+        dbConnection = connectToDatabase();
+        if (dbConnection == null) {
+            throw new SQLException("Database connection failed.");
+        }
+        initializeUI();
+        startAutoRefresh(); // Start automatic refreshing
+    }
+
+    private void initializeUI() {
+        frame = new JFrame("Admin Dashboard");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(1000, 600);
+
+        JTabbedPane tabbedPane = new JTabbedPane();
+
+        // File Management Tab
+        JPanel fileManagementPanel = createFileManagementPanel();
+        tabbedPane.add("File Management", fileManagementPanel);
+
+        // User Management Tab
+        JPanel userManagementPanel = createUserManagementPanel();
+        tabbedPane.add("User Management", userManagementPanel);
+
+        // Footer with Credits
+        JLabel footerLabel = new JLabel("Created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(Color.DARK_GRAY);
+
+        frame.add(tabbedPane, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private JPanel createFileManagementPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(new Color(240, 248, 255)); // Light blue background
+
+        tableModel = new DefaultTableModel(new String[]{"Filename", "Upload Date", "Owner", "Status"}, 0);
+        fileTable = new JTable(tableModel);
+
+        JButton refreshButton = createStyledButton("Refresh");
+        refreshButton.addActionListener(e -> refreshFileList());
+
+        JButton downloadButton = createStyledButton("Download");
+        downloadButton.addActionListener(e -> downloadSelectedFile());
+
+        JButton deleteButton = createStyledButton("Delete");
+        deleteButton.addActionListener(e -> deleteSelectedFile());
+
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setBackground(new Color(230, 230, 250)); // Light purple background
+        buttonPanel.add(refreshButton);
+        buttonPanel.add(downloadButton);
+        buttonPanel.add(deleteButton);
+
+        panel.add(new JScrollPane(fileTable), BorderLayout.CENTER);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel createUserManagementPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(new Color(240, 248, 255)); // Light blue background
+
+        userTableModel = new DefaultTableModel(new String[]{"Username", "Actions"}, 0);
+        userTable = new JTable(userTableModel);
+
+        JButton refreshButton = createStyledButton("Refresh Users");
+        refreshButton.addActionListener(e -> refreshUserList());
+
+        JButton deleteUserButton = createStyledButton("Delete User");
+        deleteUserButton.addActionListener(e -> deleteUser());
+
+        JButton resetPasswordButton = createStyledButton("Reset Password");
+        resetPasswordButton.addActionListener(e -> resetPassword());
+
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setBackground(new Color(230, 230, 250)); // Light purple background
+        buttonPanel.add(refreshButton);
+        buttonPanel.add(deleteUserButton);
+        buttonPanel.add(resetPasswordButton);
+
+        panel.add(new JScrollPane(userTable), BorderLayout.CENTER);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(173, 216, 230)); // Light cyan background
+        button.setForeground(Color.DARK_GRAY);
+        button.setFocusPainted(false);
+        button.setFont(new Font("Arial", Font.BOLD, 12));
+        return button;
+    }
+
+    private void startAutoRefresh() {
+        autoRefreshTimer = new Timer(5000, new ActionListener() { // Refresh every 5 seconds
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                refreshFileList(); // Refresh file list
+                refreshUserList(); // Refresh user list
+            }
+        });
+        autoRefreshTimer.start(); // Start the timer
+    }
+
+    public void refreshFileList() {
+        SwingUtilities.invokeLater(() -> {
+            tableModel.setRowCount(0); // Clear the table
+            try (Statement stmt = dbConnection.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT filename, upload_date, owner FROM files")) {
+
+                while (rs.next()) {
+                    tableModel.addRow(new Object[]{
+                            rs.getString("filename"),
+                            rs.getTimestamp("upload_date"),
+                            rs.getString("owner"),
+                            "Saved"
+                    });
+                }
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(frame, "Error fetching files: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
+
+    public void refreshUserList() {
+        SwingUtilities.invokeLater(() -> {
+            userTableModel.setRowCount(0); // Clear the table
+            try (Statement stmt = dbConnection.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT username FROM users")) {
+
+                while (rs.next()) {
+                    userTableModel.addRow(new Object[]{rs.getString("username"), "Actions"});
+                }
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(frame, "Error fetching users: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
+
+    private void downloadSelectedFile() {
+        int selectedRow = fileTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No file selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String fileName = (String) tableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("SELECT file_data FROM files WHERE filename = ?")) {
+            ps.setString(1, fileName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    byte[] fileData = rs.getBytes("file_data");
+                    JFileChooser fileChooser = new JFileChooser();
+                    fileChooser.setSelectedFile(new java.io.File(fileName));
+                    if (fileChooser.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) {
+                        java.io.File saveFile = fileChooser.getSelectedFile();
+                        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(saveFile)) {
+                            fos.write(fileData);
+                            JOptionPane.showMessageDialog(frame, "File downloaded successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    }
+                } else {
+                    JOptionPane.showMessageDialog(frame, "File not found in the database.", "Error", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        } catch (SQLException | java.io.IOException e) {
+            JOptionPane.showMessageDialog(frame, "Error downloading file: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void deleteSelectedFile() {
+        int selectedRow = fileTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No file selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String fileName = (String) tableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("DELETE FROM files WHERE filename = ?")) {
+            ps.setString(1, fileName);
+            int rowsAffected = ps.executeUpdate();
+            if (rowsAffected > 0) {
+                JOptionPane.showMessageDialog(frame, "File deleted successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                refreshFileList();
+            } else {
+                JOptionPane.showMessageDialog(frame, "File not found.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error deleting file: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void deleteUser() {
+        int selectedRow = userTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No user selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String username = (String) userTableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("DELETE FROM users WHERE username = ?")) {
+            ps.setString(1, username);
+            int rowsAffected = ps.executeUpdate();
+            if (rowsAffected > 0) {
+                JOptionPane.showMessageDialog(frame, "User deleted successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                refreshUserList();
+            } else {
+                JOptionPane.showMessageDialog(frame, "User not found.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error deleting user: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void resetPassword() {
+        int selectedRow = userTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No user selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String username = (String) userTableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("UPDATE users SET password = ? WHERE username = ?")) {
+            ps.setString(1, "defaultpassword"); // Replace with a secure default password logic
+            ps.setString(2, username);
+            int rowsAffected = ps.executeUpdate();
+            if (rowsAffected > 0) {
+                JOptionPane.showMessageDialog(frame, "Password reset successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+            } else {
+                JOptionPane.showMessageDialog(frame, "User not found.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error resetting password: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private Connection connectToDatabase() {
+        try {
+            String url = "jdbc:mysql://localhost:3306/file_transfer";
+            String user = "root";
+            String password = "H@mm1d2024";
+            return DriverManager.getConnection(url, user, password);
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error connecting to the database: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+
+public class AdminLogin {
+    private JFrame frame;
+    private JTextField usernameField;
+    private JPasswordField passwordField;
+
+    public void display() {
+        frame = new JFrame("Admin Login");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 300);
+        frame.setLayout(new BorderLayout());
+
+        // Main content panel
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel titleLabel = new JLabel("Admin Login");
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 18));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JLabel usernameLabel = new JLabel("Username:");
+        usernameLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        usernameField = new JTextField(20);
+        usernameField.setMaximumSize(new Dimension(Integer.MAX_VALUE, usernameField.getPreferredSize().height));
+
+        JLabel passwordLabel = new JLabel("Password:");
+        passwordLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        passwordField = new JPasswordField(20);
+        passwordField.setMaximumSize(new Dimension(Integer.MAX_VALUE, passwordField.getPreferredSize().height));
+
+        JButton loginButton = createStyledButton("Login");
+        loginButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                String username = usernameField.getText();
+                String password = new String(passwordField.getPassword());
+
+                if (authenticateAdmin(username, password)) {
+                    frame.dispose();
+                    new PortSelection().display(); // Proceed to port selection
+                } else {
+                    JOptionPane.showMessageDialog(frame, "Invalid credentials!", "Error", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        });
+
+        panel.add(titleLabel);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+        panel.add(usernameLabel);
+        panel.add(usernameField);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+        panel.add(passwordLabel);
+        panel.add(passwordField);
+        panel.add(Box.createRigidArea(new Dimension(0, 20)));
+        panel.add(loginButton);
+
+        // Footer
+        JLabel footerLabel = new JLabel("Project created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(Color.DARK_GRAY);
+
+        frame.add(panel, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private boolean authenticateAdmin(String username, String password) {
+        return "serveradmin".equals(username) && "admin".equals(password);
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(72, 209, 204)); // Light teal
+        button.setForeground(Color.WHITE);
+        button.setFocusPainted(false);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+}
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.io.*;
+import java.net.Socket;
+import java.sql.*;
+import java.util.HashMap;
+import java.util.Map;
+
+public class ChatWindow {
+    private JFrame frame;
+    private String username;
+    private String serverIp;
+    private int serverPort;
+    private JTextArea messageArea;
+    private JTextField messageInput;
+    private JTable userTable;
+    private DefaultTableModel userTableModel;
+    private boolean isGroupChat = false;
+    private JLabel typingIndicator;
+    private Map<String, String> userStatusMap = new HashMap<>();
+    private Timer messageRefreshTimer;
+
+    public ChatWindow(String username, String serverIp, int serverPort) {
+        this.username = username;
+        this.serverIp = serverIp;
+        this.serverPort = serverPort;
+        initializeUI();
+        loadUsers();
+        startMessageRefresh();
+        updateOnlineStatus("Online");
+    }
+
+    public void display() {
+        frame.setVisible(true);
+    }
+
+    private void initializeUI() {
+        frame = new JFrame("Chat Window");
+        frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+        frame.setSize(800, 600);
+        frame.setLayout(new BorderLayout());
+        
+        // Set a blue color scheme for the background and UI components
+        frame.getContentPane().setBackground(new Color(0, 51, 102));  // Dark blue background
+        
+        JLabel titleLabel = new JLabel("Chat", SwingConstants.CENTER);
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        titleLabel.setForeground(Color.WHITE);  // White text for the title
+        frame.add(titleLabel, BorderLayout.NORTH);
+
+        // User table for private chats
+        userTableModel = new DefaultTableModel(new String[]{"Users", "Status"}, 0);
+        userTable = new JTable(userTableModel);
+        userTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        userTable.setBackground(new Color(0, 102, 204)); // Light blue background for user table
+        userTable.setForeground(Color.WHITE);  // White text for the table
+        userTable.addMouseListener(new java.awt.event.MouseAdapter() {
+            public void mouseClicked(java.awt.event.MouseEvent evt) {
+                int row = userTable.getSelectedRow();
+                if (row != -1) {
+                    isGroupChat = false;
+                    String selectedUser = (String) userTableModel.getValueAt(row, 0);
+                    loadChat(selectedUser);
+                }
+            }
+        });
+        JScrollPane userScrollPane = new JScrollPane(userTable);
+        userScrollPane.setPreferredSize(new Dimension(200, 0));
+        frame.add(userScrollPane, BorderLayout.WEST);
+
+        // Message area
+        messageArea = new JTextArea();
+        messageArea.setEditable(false);
+        messageArea.setBackground(new Color(240, 240, 240));  // Light gray for message area
+        messageArea.setForeground(Color.BLACK);  // Black text for the message area
+        JScrollPane messageScrollPane = new JScrollPane(messageArea);
+        frame.add(messageScrollPane, BorderLayout.CENTER);
+
+        // Typing indicator
+        typingIndicator = new JLabel("", SwingConstants.CENTER);
+        typingIndicator.setForeground(Color.WHITE);  // White text for typing indicator
+        frame.add(typingIndicator, BorderLayout.SOUTH);
+
+        // Input panel for sending messages
+        JPanel inputPanel = new JPanel(new BorderLayout());
+        inputPanel.setBackground(new Color(0, 51, 102));  // Dark blue background
+        messageInput = new JTextField();
+        messageInput.setBackground(new Color(255, 255, 255));  // White background for input field
+        messageInput.setForeground(Color.BLACK);  // Black text for input field
+        messageInput.addKeyListener(new java.awt.event.KeyAdapter() {
+            public void keyTyped(java.awt.event.KeyEvent e) {
+                sendTypingNotification();
+            }
+        });
+        
+        JButton sendButton = new JButton("Send");
+        sendButton.setBackground(new Color(0, 102, 204));  // Blue background for button
+        sendButton.setForeground(Color.WHITE);  // White text for the button
+        sendButton.addActionListener(e -> sendMessage());
+
+        inputPanel.add(messageInput, BorderLayout.CENTER);
+        inputPanel.add(sendButton, BorderLayout.EAST);
+        frame.add(inputPanel, BorderLayout.SOUTH);
+
+        // Global chat button
+        JButton globalChatButton = new JButton("Global Chat");
+        globalChatButton.setBackground(new Color(0, 102, 204));  // Blue background for button
+        globalChatButton.setForeground(Color.WHITE);  // White text for button
+        globalChatButton.addActionListener(e -> {
+            isGroupChat = true;
+            loadGlobalChat();
+        });
+        JPanel globalChatPanel = new JPanel(new BorderLayout());
+        globalChatPanel.setBackground(new Color(0, 51, 102));  // Dark blue background
+        globalChatPanel.add(globalChatButton, BorderLayout.CENTER);
+        frame.add(globalChatPanel, BorderLayout.NORTH);
+    }
+
+    private void loadUsers() {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT username, status FROM users WHERE username != '" + username + "'");) {
+
+            userTableModel.setRowCount(0);
+            while (rs.next()) {
+                String user = rs.getString("username");
+                String status = rs.getString("status");
+                userStatusMap.put(user, status);
+                userTableModel.addRow(new Object[]{user, status});
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error loading users: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+   private void loadChat(String selectedUser) {
+        boolean hasNewMessages = false;
+        messageArea.setText("");  // Clear the message area before loading new messages
+
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("SELECT sender, message, timestamp, read_status FROM messages WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?) ORDER BY timestamp")) {
+
+            ps.setString(1, username);  // Set the current user's username
+            ps.setString(2, selectedUser);  // Set the selected user's username
+            ps.setString(3, selectedUser);  // Set the selected user's username again (for reverse chat order)
+            ps.setString(4, username);  // Set the current user's username again
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String sender = rs.getString("sender");
+                    String message = rs.getString("message");
+                    Timestamp timestamp = rs.getTimestamp("timestamp");
+                    String readStatus = rs.getString("read_status");
+
+                    // Check for unread messages and set flag to true
+                    if ("Unread".equals(readStatus) && !sender.equals(username)) {
+                        hasNewMessages = true;
+                    }
+
+                    // Append the message to the message area with read status
+                    messageArea.append(sender + ": " + message + " (" + timestamp + ") " + "[" + readStatus + "]\n");
+                }
+            }
+
+            // If there are new unread messages, show a notification dialog
+            if (hasNewMessages) {
+                int option = JOptionPane.showConfirmDialog(frame, "You have new messages!", "New Message", JOptionPane.OK_OPTION, JOptionPane.INFORMATION_MESSAGE);
+                if (option == JOptionPane.OK_OPTION) {
+                    // Mark messages as "Read" once the user clicks "OK"
+                    try (Connection updateConn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+                         PreparedStatement updatePs = updateConn.prepareStatement("UPDATE messages SET read_status = 'Read' WHERE (sender = ? AND receiver = ?) OR (sender = ? AND receiver = ?) AND read_status = 'Unread'")) {
+
+                        // Update the status of unread messages to "Read"
+                        updatePs.setString(1, selectedUser);  // Set the selected user as sender
+                        updatePs.setString(2, username);  // Set the current user as receiver
+                        updatePs.setString(3, username);  // Set the current user as sender
+                        updatePs.setString(4, selectedUser);  // Set the selected user as receiver
+                        updatePs.executeUpdate();  // Execute the update query
+                    } catch (SQLException e) {
+                        JOptionPane.showMessageDialog(frame, "Error marking messages as read: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            }
+
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error loading chat: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void loadGlobalChat() {
+        messageArea.setText("");
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("SELECT sender, message, timestamp FROM messages WHERE receiver IS NULL ORDER BY timestamp")) {
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String sender = rs.getString("sender");
+                    String message = rs.getString("message");
+                    Timestamp timestamp = rs.getTimestamp("timestamp");
+                    messageArea.append(sender + ": " + message + " (" + timestamp + ")\n");
+                }
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error loading global chat: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void sendMessage() {
+        String message = messageInput.getText();
+        if (message.trim().isEmpty()) {
+            JOptionPane.showMessageDialog(frame, "Message cannot be empty.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("INSERT INTO messages (sender, receiver, message, timestamp) VALUES (?, ?, ?, ?)")) {
+
+            ps.setString(1, username);
+            if (isGroupChat) {
+                ps.setNull(2, Types.VARCHAR); // Global chat has no receiver
+            } else {
+                int selectedRow = userTable.getSelectedRow();
+                if (selectedRow == -1) {
+                    JOptionPane.showMessageDialog(frame, "No user selected.", "Error", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+                String selectedUser = (String) userTable.getValueAt(selectedRow, 0);
+                ps.setString(2, selectedUser);
+            }
+
+            ps.setString(3, message);
+            ps.setTimestamp(4, new Timestamp(System.currentTimeMillis()));
+            ps.executeUpdate();
+
+            messageInput.setText("");
+            if (isGroupChat) {
+                loadGlobalChat();
+            } else {
+                loadChat((String) userTable.getValueAt(userTable.getSelectedRow(), 0));
+            }
+
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error sending message: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void sendTypingNotification() {
+        try (Socket socket = new Socket(serverIp, serverPort);
+             PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+            out.println(username + " is typing...");
+        } catch (IOException e) {
+            JOptionPane.showMessageDialog(frame, "Error sending typing notification: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void updateOnlineStatus(String status) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("UPDATE users SET status = ? WHERE username = ?")) {
+
+            ps.setString(1, status);
+            ps.setString(2, username);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error updating status: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void startMessageRefresh() {
+        messageRefreshTimer = new Timer(5000, e -> {
+            if (isGroupChat) {
+                loadGlobalChat();
+            } else {
+                loadChat((String) userTable.getValueAt(userTable.getSelectedRow(), 0));
+            }
+        });
+        messageRefreshTimer.start();
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new ChatWindow("User1", "localhost", 12345).display();
+        });
+    }
+}
+import javax.swing.*;
+
+public class ClientMain {
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new ConnectionSetup().display(); // Start with the connection setup screen
+        });
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+import java.io.IOException;
+import java.net.Socket;
+
+class ConnectionDashboard {
+    JFrame frame;
+    String username;
+    String serverIp;  // Server IP from connection setup
+    int serverPort;   // Server port from connection setup
+
+    public ConnectionDashboard(String username, String serverIp, int serverPort) {
+        this.username = username;
+        this.serverIp = serverIp;
+        this.serverPort = serverPort;
+    }
+
+    public void display() {
+        frame = new JFrame("Connect to Server");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 200);
+
+        JPanel panel = new JPanel(new GridLayout(3, 2, 10, 10));
+        JLabel ipLabel = new JLabel("Server IP:");
+        JTextField ipField = new JTextField(serverIp); // Use the provided server IP
+        JLabel portLabel = new JLabel("Server Port:");
+        JTextField portField = new JTextField(String.valueOf(serverPort)); // Use the provided server port
+
+        JButton connectButton = new JButton("Connect");
+        connectButton.addActionListener(e -> {
+            // Check connection to the server
+            if (isServerReachable(ipField.getText(), Integer.parseInt(portField.getText()))) {
+                JOptionPane.showMessageDialog(frame, "Connection successful!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                frame.dispose();
+                new UserDashboard(username, ipField.getText(), Integer.parseInt(portField.getText())).display(); // Pass server details
+            } else {
+                JOptionPane.showMessageDialog(frame, "Cannot connect to the server. Please check the IP and port.", "Connection Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        panel.add(ipLabel);
+        panel.add(ipField);
+        panel.add(portLabel);
+        panel.add(portField);
+        panel.add(new JLabel());
+        panel.add(connectButton);
+
+        frame.add(panel);
+        frame.setVisible(true);
+    }
+
+    private boolean isServerReachable(String serverIp, int serverPort) {
+        try (Socket socket = new Socket(serverIp, serverPort)) {
+            return true; // Connection successful
+        } catch (IOException ex) {
+            System.err.println("Server is not reachable: " + ex.getMessage()); // Debugging output
+            return false; // Connection failed
+        }
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+import java.io.IOException;
+import java.net.Socket;
+
+public class ConnectionSetup {
+    private JFrame frame;
+    private String serverIp;
+    private int serverPort;
+
+    public void display() {
+        frame = new JFrame("Connect to Server");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 250); // Increased size for better layout
+
+        // Set background color for the frame
+        frame.getContentPane().setBackground(new Color(173, 216, 230)); // Light blue color
+
+        // Create panel with GridBagLayout for more flexible design
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBackground(new Color(173, 216, 230)); // Light blue color
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(10, 10, 10, 10); // Padding for each component
+
+        JLabel ipLabel = new JLabel("Server IP:");
+        JTextField ipField = new JTextField("127.0.0.1", 15); // Default IP with width
+        JLabel portLabel = new JLabel("Server Port:");
+        JTextField portField = new JTextField("8080", 5); // Default Port with width
+
+        // Connect button with updated color and styling
+        JButton connectButton = new JButton("Connect");
+        connectButton.setBackground(new Color(70, 130, 180)); // SteelBlue color
+        connectButton.setForeground(Color.WHITE); // White text
+        connectButton.setFont(new Font("Arial", Font.BOLD, 14)); // Bold font for the button
+        connectButton.setFocusPainted(false); // Remove the focus outline
+
+        connectButton.addActionListener(e -> {
+            serverIp = ipField.getText();
+            try {
+                serverPort = Integer.parseInt(portField.getText()); // Parse the port number
+
+                // Check if the server is reachable
+                if (isServerReachable(serverIp, serverPort)) {
+                    JOptionPane.showMessageDialog(frame, "Connection successful!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                    frame.dispose();
+                    new UserLogin(serverIp, serverPort).display(); // Pass server IP and port to UserLogin
+                } else {
+                    JOptionPane.showMessageDialog(frame, "Cannot connect to the server. Please check the IP and port.", "Connection Error", JOptionPane.ERROR_MESSAGE);
+                }
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(frame, "Invalid port number!", "Error", JOptionPane.ERROR_MESSAGE);
+            } catch (Exception ex) {
+                ex.printStackTrace(); // Print stack trace for debugging
+                JOptionPane.showMessageDialog(frame, "Error: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        // Layout configuration for components using GridBagLayout
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        panel.add(ipLabel, gbc);
+
+        gbc.gridx = 1;
+        panel.add(ipField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        panel.add(portLabel, gbc);
+
+        gbc.gridx = 1;
+        panel.add(portField, gbc);
+
+        gbc.gridx = 0;
+        gbc.gridy = 2;
+        gbc.gridwidth = 2; // Make the button span across both columns
+        panel.add(connectButton, gbc);
+
+        // Add the panel to the frame
+        frame.add(panel);
+        frame.setVisible(true);
+    }
+
+    private boolean isServerReachable(String serverIp, int serverPort) {
+        try (Socket socket = new Socket(serverIp, serverPort)) {
+            return true; // Connection successful
+        } catch (IOException ex) {
+            System.err.println("Server is not reachable: " + ex.getMessage()); // Debugging output
+            return false; // Connection failed
+        }
+    }
+}
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+
+public class DatabaseConnection {
+    private static final String URL = "jdbc:mysql://localhost:3306/file_transfer";
+    private static final String USER = "root";
+    private static final String PASSWORD = "H@mm1d2024";
+
+    public static Connection getConnection() throws SQLException {
+        return DriverManager.getConnection(URL, USER, PASSWORD);
+    }
+}
+import java.io.Serializable;
+import java.sql.Timestamp;
+
+public class FileMetadata implements Serializable {
+    private static final long serialVersionUID = 1L; // Recommended for Serializable classes
+
+    private final int id;
+    private final String filename;
+    private final String uploadDate;
+    private final byte[] fileContent; // Can be used if you want to send file content
+    private final String owner;
+
+    // Main constructor for all fields
+    public FileMetadata(int id, String filename, String uploadDate, byte[] fileContent, String owner) {
+        this.id = id;
+        this.filename = filename;
+        this.uploadDate = uploadDate;
+        this.fileContent = fileContent;
+        this.owner = owner;
+    }
+
+    // Constructor for uploading files with content
+    public FileMetadata(String filename, String owner, byte[] fileContent) {
+        this.id = -1; // Default ID for temporary metadata
+        this.filename = filename;
+        this.uploadDate = new Timestamp(System.currentTimeMillis()).toString(); // Set current time as upload date
+        this.fileContent = fileContent;
+        this.owner = owner;
+    }
+
+    // Overloaded constructor for metadata without file content
+    public FileMetadata(String filename, String owner, Timestamp uploadDate) {
+        this.id = -1; // Default ID for temporary metadata
+        this.filename = filename;
+        this.uploadDate = uploadDate != null ? uploadDate.toString() : null;
+        this.fileContent = null; // No file content provided
+        this.owner = owner;
+    }
+
+    // Getter methods
+    public int getId() {
+        return id;
+    }
+
+    public String getFilename() {
+        return filename;
+    }
+
+    public String getUploadDate() {
+        return uploadDate;
+    }
+
+    public byte[] getFileContent() {
+        return fileContent;
+    }
+
+    public String getOwner() {
+        return owner;
+    }
+}
+import java.io.*;
+import java.net.*;
+import java.sql.Timestamp; // Make sure to import this
+import java.util.ArrayList;
+import java.util.List;
+
+public class FileTransferClient {
+    private String serverAddress;
+    private int port;
+
+    public FileTransferClient(String serverAddress, int port) {
+        this.serverAddress = serverAddress;
+        this.port = port;
+    }
+
+    // Method to check if the server is reachable
+    public boolean checkConnection() {
+        try (Socket socket = new Socket(serverAddress, port)) {
+            return true; // Connection successful
+        } catch (IOException ex) {
+            System.err.println("Connection failed: " + ex.getMessage());
+            return false; // Connection failed
+        }
+    }
+
+    public void uploadFileData(File file, String owner) {
+        if (file == null || !file.exists()) {
+            System.out.println("File not found: " + (file != null ? file.getAbsolutePath() : "null"));
+            return;
+        }
+
+        // Check connection before uploading
+        if (!checkConnection()) {
+            System.out.println("Cannot connect to the server. Please check the server address and port.");
+            return;
+        }
+
+        try (Socket socket = new Socket(serverAddress, port);
+             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+             FileInputStream fis = new FileInputStream(file)) {
+
+            // Send upload operation
+            dos.writeUTF("UPLOAD");
+            dos.writeUTF(file.getName());
+            dos.writeLong(file.length());
+            dos.writeUTF(owner);
+
+            // Now send the file data
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) > 0) {
+                dos.write(buffer, 0, bytesRead);
+            }
+            dos.flush(); // Ensure all data is sent
+
+            System.out.println("File uploaded successfully: " + file.getName());
+
+        } catch (IOException ex) {
+            System.err.println("Error uploading file: " + ex.getMessage());
+            ex.printStackTrace(); // Print stack trace for debugging
+        }
+    }
+
+    public List<FileMetadata> getUploadedFiles(String username) {
+        List<FileMetadata> fileList = new ArrayList<>();
+        try (Socket socket = new Socket(serverAddress, port);
+             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+             DataInputStream dis = new DataInputStream(socket.getInputStream())) {
+
+            // Request to get uploaded files
+            dos.writeUTF("GET_UPLOADED_FILES");
+            dos.writeUTF(username != null ? username : ""); // Send an empty string if username is null
+
+            // Read the number of files
+            int numberOfFiles = dis.readInt();
+            for (int i = 0; i < numberOfFiles; i++) {
+                String filename = dis.readUTF();
+                String owner = dis.readUTF();
+                String uploadDate = dis.readUTF(); // Assuming upload date is sent as a string
+                fileList.add(new FileMetadata(filename, owner, Timestamp.valueOf(uploadDate))); // Create FileMetadata object
+            }
+        } catch (IOException e) {
+            System.err.println("Error retrieving uploaded files: " + e.getMessage());
+        }
+        return fileList;
+    }
+
+    public void downloadFile(String filename, String savePath) {
+        try (Socket socket = new Socket(serverAddress, port);
+             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+             DataInputStream dis = new DataInputStream(socket.getInputStream())) {
+
+            // Request file download
+            dos.writeUTF("DOWNLOAD");
+            dos.writeUTF(filename);
+
+            // Receive response
+            boolean fileExists = dis.readBoolean();
+            if (!fileExists) {
+                System.out.println("File not found on server: " + filename);
+                return;
+            }
+
+            // Receive and save file
+            File file = new File(savePath);
+            try (FileOutputStream fos = new FileOutputStream(file)) {
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                while ((bytesRead = dis.read(buffer)) > 0) {
+                    fos.write(buffer, 0, bytesRead);
+                }
+            }
+
+            System.out.println("File downloaded successfully: " + savePath);
+
+        } catch (IOException ex) {
+            System.err.println("Error downloading file: " + ex.getMessage());
+            ex.printStackTrace(); // Print stack trace for debugging
+        }
+    }
+
+    public void deleteFile(String filename, String owner) {
+        try (Socket socket = new Socket(serverAddress, port);
+             DataOutputStream dos = new DataOutputStream(socket.getOutputStream())) {
+
+            // Request file deletion
+            dos.writeUTF("DELETE");
+            dos.writeUTF(filename);
+            dos.writeUTF(owner);
+
+            System.out.println("File deletion request sent for: " + filename);
+
+        } catch (IOException ex) {
+            System.err.println("Error deleting file: " + ex.getMessage());
+            ex.printStackTrace(); // Print stack trace for debugging
+        }
+    }
+}
+import java.io.*;
+import java.net.*;
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class FileTransferServer {
+    private int port;
+    private AdminDashboard adminDashboard;
+
+    public FileTransferServer(int port) {
+        this.port = port;
+        try {
+            this.adminDashboard = new AdminDashboard(port); // Pass the port to AdminDashboard
+        } catch (Exception e) {
+            e.printStackTrace(); // Handle exception appropriately
+            System.exit(1); // Optionally terminate the application if the dashboard fails to initialize
+        }
+    }
+
+    public void start() {
+        System.out.println("Server started on port: " + port);
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("Client connected: " + clientSocket.getInetAddress());
+
+                // Handle client in a separate thread
+                new Thread(() -> handleClient(clientSocket)).start();
+            }
+        } catch (IOException e) {
+            System.err.println("Error starting server: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void handleClient(Socket clientSocket) {
+        try (DataInputStream dis = new DataInputStream(clientSocket.getInputStream());
+             DataOutputStream dos = new DataOutputStream(clientSocket.getOutputStream())) {
+
+            // Read operation type
+            String operation = dis.readUTF();
+            if ("UPLOAD".equals(operation)) {
+                String filename = dis.readUTF();
+                long fileSize = dis.readLong();
+                String owner = dis.readUTF();
+
+                System.out.println("Receiving file: " + filename + " from owner: " + owner);
+                File uploadDirectory = new File("upload_directory");
+                if (!uploadDirectory.exists()) {
+                    uploadDirectory.mkdirs(); // Create the directory if it doesn't exist
+                }
+                File file = new File(uploadDirectory, filename);
+
+                // Prepare to read file content
+                byte[] fileContent = new byte[(int) fileSize];
+                try (FileOutputStream fos = new FileOutputStream(file);
+                     BufferedOutputStream bos = new BufferedOutputStream(fos)) {
+
+                    int bytesRead;
+                    long totalBytesRead = 0;
+
+                    // Read the file data from the client
+                    while (totalBytesRead < fileSize && (bytesRead = dis.read(fileContent, (int) totalBytesRead, (int) Math.min(fileSize - totalBytesRead, fileContent.length))) != -1) {
+                        bos.write(fileContent, 0, bytesRead);
+                        totalBytesRead += bytesRead;
+                    }
+                    bos.flush();
+
+                    // Save metadata to the database along with the file data
+                    saveFileToDatabase(new FileMetadata(filename, owner, fileContent));
+
+                    // Refresh the file list in the admin dashboard
+                    adminDashboard.refreshFileList(); // Refresh from the database
+
+                    System.out.println("File " + filename + " uploaded successfully.");
+                }
+            } else if ("GET_UPLOADED_FILES".equals(operation)) {
+                String username = dis.readUTF();
+                List<FileMetadata> files = fetchFilesFromDatabase(username); // Fetch files for the specific user
+                dos.writeInt(files.size()); // Send number of files
+                for (FileMetadata file : files) {
+                    dos.writeUTF(file.getFilename());
+                    dos.writeUTF(file.getOwner());
+                    dos.writeUTF(file.getUploadDate() != null ? file.getUploadDate().toString() : ""); // Send upload date as string
+                }
+            } else if ("DELETE".equals(operation)) {
+                String filename = dis.readUTF();
+                String owner = dis.readUTF();
+                deleteFileFromDatabase(filename, owner); // Handle deletion
+            }
+
+        } catch (IOException e) {
+            System.err.println("Error handling client: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void saveFileToDatabase(FileMetadata file) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("INSERT INTO files (filename, owner, upload_date, file_data) VALUES (?, ?, ?, ?)")) {
+
+            ps.setString(1, file.getFilename());
+            ps.setString(2, file.getOwner());
+            ps.setTimestamp(3, new Timestamp(System.currentTimeMillis())); // Get current timestamp
+
+            // Save the actual file data into the database
+            ps.setBytes(4, file.getFileContent()); // Save the byte array directly
+
+            ps.executeUpdate();
+
+            System.out.println("File saved to database: " + file.getFilename());
+        } catch (SQLException e) {
+            System.err.println("Error saving file to database: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private List<FileMetadata> fetchFilesFromDatabase(String username) {
+        List<FileMetadata> fileList = new ArrayList<>();
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("SELECT filename, owner, upload_date FROM files WHERE owner = ?")) {
+            ps.setString(1, username);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                fileList.add(new FileMetadata(rs.getString("filename"), rs.getString("owner"), rs.getTimestamp("upload_date")));
+            }
+        } catch (SQLException e) {
+            System.err.println("Error fetching files from database: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return fileList;
+    }
+
+    private void deleteFileFromDatabase(String filename, String owner) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("DELETE FROM files WHERE filename = ? AND owner = ?")) {
+            ps.setString(1, filename);
+            ps.setString(2, owner);
+            ps.executeUpdate();
+            System.out.println("File deleted from database: " + filename);
+        } catch (SQLException e) {
+            System.err.println("Error deleting file from database: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+
+public class PortSelection {
+    private JFrame frame;
+    private JTextField portField;
+
+    public void display() {
+        frame = new JFrame("Select Server Port");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 200);
+        frame.setLayout(new BorderLayout());
+
+        // Main content panel
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel titleLabel = new JLabel("Start Server");
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JLabel portLabel = new JLabel("Enter Port:");
+        portLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        portField = new JTextField("8080");
+        portField.setMaximumSize(new Dimension(Integer.MAX_VALUE, portField.getPreferredSize().height));
+
+        JButton startButton = createStyledButton("Start Server");
+        startButton.addActionListener(e -> {
+            try {
+                int port = Integer.parseInt(portField.getText());
+                frame.dispose();
+                new Thread(() -> {
+                    FileTransferServer server = new FileTransferServer(port);
+                    server.start(); // Start the server
+                }).start();
+                JOptionPane.showMessageDialog(null, "Server started successfully on port: " + port, "Success", JOptionPane.INFORMATION_MESSAGE);
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(frame, "Invalid port number!", "Error", JOptionPane.ERROR_MESSAGE);
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(frame, "Error starting server: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        panel.add(titleLabel);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+        panel.add(portLabel);
+        panel.add(portField);
+        panel.add(Box.createRigidArea(new Dimension(0, 20)));
+        panel.add(startButton);
+
+        // Footer
+        JLabel footerLabel = new JLabel("Project created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(Color.DARK_GRAY);
+
+        frame.add(panel, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(100, 149, 237)); // Cornflower blue
+        button.setForeground(Color.WHITE);
+        button.setFocusPainted(false);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+}
+import javax.swing.*;
+
+public class ServerMain {
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new AdminLogin().display(); // Start with the admin login screen
+        });
+    }
+}
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.sql.*;
+import java.util.List;
+
+class UserDashboard {
+    private JFrame frame;
+    private String username;
+    private String serverIp;
+    private int serverPort;
+    private JTable fileTable;
+    private DefaultTableModel tableModel;
+
+    public UserDashboard(String username, String serverIp, int serverPort) {
+        this.username = username;
+        this.serverIp = serverIp;
+        this.serverPort = serverPort;
+    }
+
+    public void display() {
+        frame = new JFrame("User Dashboard");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(900, 600);
+        frame.setLayout(new BorderLayout());
+        frame.getContentPane().setBackground(new Color(245, 245, 245)); // Light background color
+
+        // Welcome label
+        JLabel welcomeLabel = new JLabel("Welcome, " + username, SwingConstants.CENTER);
+        welcomeLabel.setFont(new Font("Arial", Font.BOLD, 18));
+        welcomeLabel.setForeground(new Color(70, 130, 180)); // Steel blue for welcome label
+        welcomeLabel.setBorder(BorderFactory.createEmptyBorder(10, 0, 10, 0));
+
+        // Table for displaying uploaded files
+        tableModel = new DefaultTableModel(new String[]{"Filename", "Owner"}, 0);
+        fileTable = new JTable(tableModel);
+        fileTable.setSelectionBackground(new Color(100, 149, 237)); // Cornflower blue for selected rows
+        fileTable.setSelectionForeground(Color.WHITE); // White text on selected rows
+        fileTable.setRowHeight(30); // Set row height for better readability
+        fileTable.getTableHeader().setBackground(new Color(70, 130, 180)); // Header background color
+        fileTable.getTableHeader().setForeground(Color.WHITE); // Header text color
+
+        // Buttons
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setLayout(new GridLayout(1, 5, 20, 20));
+
+        JButton uploadButton = createStyledButton("Upload File");
+        JButton downloadButton = createStyledButton("Download File");
+        JButton deleteButton = createStyledButton("Delete File");
+        JButton chatButton = createStyledButton("Chat");
+        JButton logoutButton = createStyledButton("Logout");
+
+        uploadButton.addActionListener(e -> uploadFile());
+        downloadButton.addActionListener(e -> downloadSelectedFile());
+        deleteButton.addActionListener(e -> deleteSelectedFile());
+        chatButton.addActionListener(e -> openChat());
+        logoutButton.addActionListener(e -> {
+            frame.dispose();
+            new UserLogin(serverIp, serverPort).display();
+        });
+
+        buttonPanel.add(uploadButton);
+        buttonPanel.add(downloadButton);
+        buttonPanel.add(deleteButton);
+        buttonPanel.add(chatButton);
+        buttonPanel.add(logoutButton);
+
+        // Layout setup
+        frame.add(welcomeLabel, BorderLayout.NORTH);
+        frame.add(new JScrollPane(fileTable), BorderLayout.CENTER);
+        frame.add(buttonPanel, BorderLayout.SOUTH);
+
+        loadAllUploadedFiles(); // Load files
+        frame.setVisible(true);
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(70, 130, 180)); // Steel Blue
+        button.setForeground(Color.WHITE);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setFocusPainted(false);
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+
+    private void loadAllUploadedFiles() {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT filename, owner FROM files")) {
+
+            tableModel.setRowCount(0); // Clear the table
+            while (rs.next()) {
+                String filename = rs.getString("filename");
+                String owner = rs.getString("owner");
+                tableModel.addRow(new Object[]{filename, owner}); // Show all files
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error loading files: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void uploadFile() {
+        JFileChooser fileChooser = new JFileChooser();
+        if (fileChooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            try {
+                // Create a new client instance for uploading
+                FileTransferClient client = new FileTransferClient(serverIp, serverPort);
+                client.uploadFileData(file, username);
+                JOptionPane.showMessageDialog(frame, "File uploaded successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                loadAllUploadedFiles(); // Refresh the file list after upload
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(frame, "Error uploading file: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private void downloadSelectedFile() {
+        int selectedRow = fileTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No file selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String fileName = (String) tableModel.getValueAt(selectedRow, 0);
+
+        // Use JFileChooser to allow the user to specify the save location
+        JFileChooser fileChooser = new JFileChooser();
+        fileChooser.setSelectedFile(new File(fileName)); // Set the default file name
+
+        if (fileChooser.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) {
+            File saveFile = fileChooser.getSelectedFile();
+            try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+                 PreparedStatement ps = conn.prepareStatement("SELECT file_data FROM files WHERE filename = ?")) {
+
+                ps.setString(1, fileName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        byte[] fileData = rs.getBytes("file_data");
+                        try (FileOutputStream fos = new FileOutputStream(saveFile)) {
+                            fos.write(fileData);
+                            JOptionPane.showMessageDialog(frame, "File downloaded successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    } else {
+                        JOptionPane.showMessageDialog(frame, "File not found in the database.", "Error", JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            } catch (SQLException | IOException ex) {
+                JOptionPane.showMessageDialog(frame, "Error downloading file: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private void deleteSelectedFile() {
+        int selectedRow = fileTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No file selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String fileName = (String) tableModel.getValueAt(selectedRow, 0);
+        String fileOwner = (String) tableModel.getValueAt(selectedRow, 1); // Get the owner of the file
+
+        // Check if the current user is the owner of the file
+        if (!fileOwner.equals(username)) {
+            JOptionPane.showMessageDialog(frame, "You don't have permission to delete this file.", "Permission Denied", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        try {
+            // Create a new client instance for deleting
+            FileTransferClient client = new FileTransferClient(serverIp, serverPort);
+            client.deleteFile(fileName, username);
+            JOptionPane.showMessageDialog(frame, "File deleted successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+            loadAllUploadedFiles(); // Refresh the file list after deletion
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(frame, "Error deleting file: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void openChat() {
+        // Open the chat window without closing the dashboard
+        ChatWindow chatWindow = new ChatWindow(username, serverIp, serverPort);
+        chatWindow.display(); // Display the chat window
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.Statement;
+
+class UserLogin {
+    private JFrame frame;
+    private JTextField usernameField;
+    private JPasswordField passwordField;
+    private String serverIp;
+    private int serverPort;
+
+    public UserLogin(String serverIp, int serverPort) {
+        this.serverIp = serverIp;
+        this.serverPort = serverPort;
+    }
+
+    public void display() {
+        frame = new JFrame("User Login");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 350);
+        frame.setLayout(new BorderLayout());
+
+        // Set background color for the frame
+        frame.getContentPane().setBackground(new Color(173, 216, 230)); // Light blue color
+
+        // Create panel with BoxLayout for better vertical component positioning
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel titleLabel = new JLabel("User Login");
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 18));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JLabel usernameLabel = new JLabel("Username:");
+        usernameLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        usernameField = new JTextField(20);
+        usernameField.setMaximumSize(new Dimension(Integer.MAX_VALUE, usernameField.getPreferredSize().height));
+
+        JLabel passwordLabel = new JLabel("Password:");
+        passwordLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        passwordField = new JPasswordField(20);
+        passwordField.setMaximumSize(new Dimension(Integer.MAX_VALUE, passwordField.getPreferredSize().height));
+
+        // Styled Login Button
+        JButton loginButton = createStyledButton("Login");
+        loginButton.addActionListener(e -> {
+            String username = usernameField.getText();
+            String password = new String(passwordField.getPassword());
+            if (authenticateUser(username, password)) {
+                frame.dispose();
+                new UserDashboard(username, serverIp, serverPort).display();
+            } else {
+                JOptionPane.showMessageDialog(frame, "Invalid username or password!", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        // Styled Signup Button
+        JButton signupButton = createStyledButton("Sign Up");
+        signupButton.addActionListener(e -> {
+            frame.dispose();
+            new UserSignUp(serverIp, serverPort).display();
+        });
+
+        // Layout configuration for username, password fields
+        JPanel formPanel = new JPanel();
+        formPanel.setLayout(new GridLayout(4, 1, 10, 10));
+        formPanel.add(usernameLabel);
+        formPanel.add(usernameField);
+        formPanel.add(passwordLabel);
+        formPanel.add(passwordField);
+
+        panel.add(titleLabel);
+        panel.add(formPanel);
+        panel.add(loginButton);
+        panel.add(signupButton);
+
+        // Footer label
+        JLabel footerLabel = new JLabel("Created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(new Color(100, 100, 100));
+
+        // Add the main panel and footer to the frame
+        frame.add(panel, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private boolean authenticateUser(String username, String password) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             Statement stmt = conn.createStatement()) {
+            String query = "SELECT * FROM users WHERE username = '" + username + "' AND password = '" + password + "'";
+            ResultSet rs = stmt.executeQuery(query);
+            return rs.next();
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return false;
+        }
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(70, 130, 180)); // Steel Blue
+        button.setForeground(Color.WHITE);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setFocusPainted(false);
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+
+class UserSignUp {
+    private JFrame frame;
+    private JTextField usernameField;
+    private JPasswordField passwordField;
+    private String serverIp;
+    private int serverPort;
+
+    public UserSignUp(String serverIp, int serverPort) {
+        this.serverIp = serverIp;
+        this.serverPort = serverPort;
+    }
+
+    public void display() {
+        frame = new JFrame("User Sign Up");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 350);
+        frame.setLayout(new BorderLayout());
+
+        // Set background color for the frame
+        frame.getContentPane().setBackground(new Color(173, 216, 230)); // Light blue color
+
+        // Create panel with BoxLayout for better vertical component positioning
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel titleLabel = new JLabel("Sign Up for File Transfer");
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 18));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JLabel usernameLabel = new JLabel("Username:");
+        usernameLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        usernameField = new JTextField(20);
+        usernameField.setMaximumSize(new Dimension(Integer.MAX_VALUE, usernameField.getPreferredSize().height));
+
+        JLabel passwordLabel = new JLabel("Password:");
+        passwordLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        passwordField = new JPasswordField(20);
+        passwordField.setMaximumSize(new Dimension(Integer.MAX_VALUE, passwordField.getPreferredSize().height));
+
+        // Styled Submit Button
+        JButton submitButton = createStyledButton("Sign Up");
+        submitButton.addActionListener(e -> {
+            String username = usernameField.getText();
+            String password = new String(passwordField.getPassword());
+            if (registerUser(username, password)) {
+                frame.dispose();
+                new UserLogin(serverIp, serverPort).display();
+            } else {
+                JOptionPane.showMessageDialog(frame, "Sign-up failed!", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        // Layout configuration for username, password fields
+        JPanel formPanel = new JPanel();
+        formPanel.setLayout(new GridLayout(4, 1, 10, 10));
+        formPanel.add(usernameLabel);
+        formPanel.add(usernameField);
+        formPanel.add(passwordLabel);
+        formPanel.add(passwordField);
+
+        panel.add(titleLabel);
+        panel.add(formPanel);
+        panel.add(submitButton);
+
+        // Footer label
+        JLabel footerLabel = new JLabel("Created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(new Color(100, 100, 100));
+
+        // Add the main panel and footer to the frame
+        frame.add(panel, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private boolean registerUser(String username, String password) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://" + serverIp + ":3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("INSERT INTO users (username, password) VALUES (?, ?)")) {
+            ps.setString(1, username);
+            ps.setString(2, password);
+            ps.executeUpdate();
+            return true;
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            return false;
+        }
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(70, 130, 180)); // Steel Blue
+        button.setForeground(Color.WHITE);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setFocusPainted(false);
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+}

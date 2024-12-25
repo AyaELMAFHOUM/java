@@ -1,0 +1,640 @@
+import javax.swing.*;
+
+public class ServerMain {
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            new AdminLogin().display(); // Start with the admin login screen
+        });
+    }
+}
+import java.io.*;
+import java.net.*;
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+
+public class FileTransferServer {
+    private int port;
+    private AdminDashboard adminDashboard;
+
+    public FileTransferServer(int port) {
+        this.port = port;
+        try {
+            this.adminDashboard = new AdminDashboard(port); // Pass the port to AdminDashboard
+        } catch (Exception e) {
+            e.printStackTrace(); // Handle exception appropriately
+            System.exit(1); // Optionally terminate the application if the dashboard fails to initialize
+        }
+    }
+
+    public void start() {
+        System.out.println("Server started on port: " + port);
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                System.out.println("Client connected: " + clientSocket.getInetAddress());
+
+                // Handle client in a separate thread
+                new Thread(() -> handleClient(clientSocket)).start();
+            }
+        } catch (IOException e) {
+            System.err.println("Error starting server: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void handleClient(Socket clientSocket) {
+        try (DataInputStream dis = new DataInputStream(clientSocket.getInputStream());
+             DataOutputStream dos = new DataOutputStream(clientSocket.getOutputStream())) {
+
+            // Read operation type
+            String operation = dis.readUTF();
+            if ("UPLOAD".equals(operation)) {
+                String filename = dis.readUTF();
+                long fileSize = dis.readLong();
+                String owner = dis.readUTF();
+
+                System.out.println("Receiving file: " + filename + " from owner: " + owner);
+                File uploadDirectory = new File("upload_directory");
+                if (!uploadDirectory.exists()) {
+                    uploadDirectory.mkdirs(); // Create the directory if it doesn't exist
+                }
+                File file = new File(uploadDirectory, filename);
+
+                // Prepare to read file content
+                byte[] fileContent = new byte[(int) fileSize];
+                try (FileOutputStream fos = new FileOutputStream(file);
+                     BufferedOutputStream bos = new BufferedOutputStream(fos)) {
+
+                    int bytesRead;
+                    long totalBytesRead = 0;
+
+                    // Read the file data from the client
+                    while (totalBytesRead < fileSize && (bytesRead = dis.read(fileContent, (int) totalBytesRead, (int) Math.min(fileSize - totalBytesRead, fileContent.length))) != -1) {
+                        bos.write(fileContent, 0, bytesRead);
+                        totalBytesRead += bytesRead;
+                    }
+                    bos.flush();
+
+                    // Save metadata to the database along with the file data
+                    saveFileToDatabase(new FileMetadata(filename, owner, fileContent));
+
+                    // Refresh the file list in the admin dashboard
+                    adminDashboard.refreshFileList(); // Refresh from the database
+
+                    System.out.println("File " + filename + " uploaded successfully.");
+                }
+            } else if ("GET_UPLOADED_FILES".equals(operation)) {
+                String username = dis.readUTF();
+                List<FileMetadata> files = fetchFilesFromDatabase(username); // Fetch files for the specific user
+                dos.writeInt(files.size()); // Send number of files
+                for (FileMetadata file : files) {
+                    dos.writeUTF(file.getFilename());
+                    dos.writeUTF(file.getOwner());
+                    dos.writeUTF(file.getUploadDate() != null ? file.getUploadDate().toString() : ""); // Send upload date as string
+                }
+            } else if ("DELETE".equals(operation)) {
+                String filename = dis.readUTF();
+                String owner = dis.readUTF();
+                deleteFileFromDatabase(filename, owner); // Handle deletion
+            }
+
+        } catch (IOException e) {
+            System.err.println("Error handling client: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private void saveFileToDatabase(FileMetadata file) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("INSERT INTO files (filename, owner, upload_date, file_data) VALUES (?, ?, ?, ?)")) {
+
+            ps.setString(1, file.getFilename());
+            ps.setString(2, file.getOwner());
+            ps.setTimestamp(3, new Timestamp(System.currentTimeMillis())); // Get current timestamp
+
+            // Save the actual file data into the database
+            ps.setBytes(4, file.getFileContent()); // Save the byte array directly
+
+            ps.executeUpdate();
+
+            System.out.println("File saved to database: " + file.getFilename());
+        } catch (SQLException e) {
+            System.err.println("Error saving file to database: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private List<FileMetadata> fetchFilesFromDatabase(String username) {
+        List<FileMetadata> fileList = new ArrayList<>();
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("SELECT filename, owner, upload_date FROM files WHERE owner = ?")) {
+            ps.setString(1, username);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                fileList.add(new FileMetadata(rs.getString("filename"), rs.getString("owner"), rs.getTimestamp("upload_date")));
+            }
+        } catch (SQLException e) {
+            System.err.println("Error fetching files from database: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return fileList;
+    }
+
+    private void deleteFileFromDatabase(String filename, String owner) {
+        try (Connection conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/file_transfer", "root", "H@mm1d2024");
+             PreparedStatement ps = conn.prepareStatement("DELETE FROM files WHERE filename = ? AND owner = ?")) {
+            ps.setString(1, filename);
+            ps.setString(2, owner);
+            ps.executeUpdate();
+            System.out.println("File deleted from database: " + filename);
+        } catch (SQLException e) {
+            System.err.println("Error deleting file from database: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+
+public class AdminLogin {
+    private JFrame frame;
+    private JTextField usernameField;
+    private JPasswordField passwordField;
+
+    public void display() {
+        frame = new JFrame("Admin Login");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 300);
+        frame.setLayout(new BorderLayout());
+
+        // Main content panel
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel titleLabel = new JLabel("Admin Login");
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 18));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JLabel usernameLabel = new JLabel("Username:");
+        usernameLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        usernameField = new JTextField(20);
+        usernameField.setMaximumSize(new Dimension(Integer.MAX_VALUE, usernameField.getPreferredSize().height));
+
+        JLabel passwordLabel = new JLabel("Password:");
+        passwordLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        passwordField = new JPasswordField(20);
+        passwordField.setMaximumSize(new Dimension(Integer.MAX_VALUE, passwordField.getPreferredSize().height));
+
+        JButton loginButton = createStyledButton("Login");
+        loginButton.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                String username = usernameField.getText();
+                String password = new String(passwordField.getPassword());
+
+                if (authenticateAdmin(username, password)) {
+                    frame.dispose();
+                    new PortSelection().display(); // Proceed to port selection
+                } else {
+                    JOptionPane.showMessageDialog(frame, "Invalid credentials!", "Error", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        });
+
+        panel.add(titleLabel);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+        panel.add(usernameLabel);
+        panel.add(usernameField);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+        panel.add(passwordLabel);
+        panel.add(passwordField);
+        panel.add(Box.createRigidArea(new Dimension(0, 20)));
+        panel.add(loginButton);
+
+        // Footer
+        JLabel footerLabel = new JLabel("Project created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(Color.DARK_GRAY);
+
+        frame.add(panel, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private boolean authenticateAdmin(String username, String password) {
+        return "serveradmin".equals(username) && "admin".equals(password);
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(72, 209, 204)); // Light teal
+        button.setForeground(Color.WHITE);
+        button.setFocusPainted(false);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+}
+import javax.swing.*;
+import java.awt.*;
+
+public class PortSelection {
+    private JFrame frame;
+    private JTextField portField;
+
+    public void display() {
+        frame = new JFrame("Select Server Port");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(400, 200);
+        frame.setLayout(new BorderLayout());
+
+        // Main content panel
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        JLabel titleLabel = new JLabel("Start Server");
+        titleLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JLabel portLabel = new JLabel("Enter Port:");
+        portLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        portField = new JTextField("8080");
+        portField.setMaximumSize(new Dimension(Integer.MAX_VALUE, portField.getPreferredSize().height));
+
+        JButton startButton = createStyledButton("Start Server");
+        startButton.addActionListener(e -> {
+            try {
+                int port = Integer.parseInt(portField.getText());
+                frame.dispose();
+                new Thread(() -> {
+                    FileTransferServer server = new FileTransferServer(port);
+                    server.start(); // Start the server
+                }).start();
+                JOptionPane.showMessageDialog(null, "Server started successfully on port: " + port, "Success", JOptionPane.INFORMATION_MESSAGE);
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(frame, "Invalid port number!", "Error", JOptionPane.ERROR_MESSAGE);
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(frame, "Error starting server: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        panel.add(titleLabel);
+        panel.add(Box.createRigidArea(new Dimension(0, 10)));
+        panel.add(portLabel);
+        panel.add(portField);
+        panel.add(Box.createRigidArea(new Dimension(0, 20)));
+        panel.add(startButton);
+
+        // Footer
+        JLabel footerLabel = new JLabel("Project created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(Color.DARK_GRAY);
+
+        frame.add(panel, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(100, 149, 237)); // Cornflower blue
+        button.setForeground(Color.WHITE);
+        button.setFocusPainted(false);
+        button.setFont(new Font("Arial", Font.BOLD, 14));
+        button.setBorder(BorderFactory.createEmptyBorder(10, 20, 10, 20));
+        return button;
+    }
+}
+import javax.swing.*;
+import javax.swing.table.DefaultTableModel;
+import java.awt.*;
+import java.sql.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+
+public class AdminDashboard {
+    private JFrame frame;
+    private JTable fileTable;
+    private DefaultTableModel tableModel;
+    private JTable userTable;
+    private DefaultTableModel userTableModel;
+    private Connection dbConnection;
+    private int serverPort;
+    private Timer autoRefreshTimer; // Timer for automatic refreshing
+
+    public AdminDashboard(int port) throws Exception {
+        this.serverPort = port;
+        dbConnection = connectToDatabase();
+        if (dbConnection == null) {
+            throw new SQLException("Database connection failed.");
+        }
+        initializeUI();
+        startAutoRefresh(); // Start automatic refreshing
+    }
+
+    private void initializeUI() {
+        frame = new JFrame("Admin Dashboard");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(1000, 600);
+
+        JTabbedPane tabbedPane = new JTabbedPane();
+
+        // File Management Tab
+        JPanel fileManagementPanel = createFileManagementPanel();
+        tabbedPane.add("File Management", fileManagementPanel);
+
+        // User Management Tab
+        JPanel userManagementPanel = createUserManagementPanel();
+        tabbedPane.add("User Management", userManagementPanel);
+
+        // Footer with Credits
+        JLabel footerLabel = new JLabel("Created by Hamid, Malak, and Saad", SwingConstants.CENTER);
+        footerLabel.setFont(new Font("Arial", Font.ITALIC, 12));
+        footerLabel.setForeground(Color.DARK_GRAY);
+
+        frame.add(tabbedPane, BorderLayout.CENTER);
+        frame.add(footerLabel, BorderLayout.SOUTH);
+        frame.setVisible(true);
+    }
+
+    private JPanel createFileManagementPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(new Color(240, 248, 255)); // Light blue background
+
+        tableModel = new DefaultTableModel(new String[]{"Filename", "Upload Date", "Owner", "Status"}, 0);
+        fileTable = new JTable(tableModel);
+
+        JButton refreshButton = createStyledButton("Refresh");
+        refreshButton.addActionListener(e -> refreshFileList());
+
+        JButton downloadButton = createStyledButton("Download");
+        downloadButton.addActionListener(e -> downloadSelectedFile());
+
+        JButton deleteButton = createStyledButton("Delete");
+        deleteButton.addActionListener(e -> deleteSelectedFile());
+
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setBackground(new Color(230, 230, 250)); // Light purple background
+        buttonPanel.add(refreshButton);
+        buttonPanel.add(downloadButton);
+        buttonPanel.add(deleteButton);
+
+        panel.add(new JScrollPane(fileTable), BorderLayout.CENTER);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JPanel createUserManagementPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBackground(new Color(240, 248, 255)); // Light blue background
+
+        userTableModel = new DefaultTableModel(new String[]{"Username", "Actions"}, 0);
+        userTable = new JTable(userTableModel);
+
+        JButton refreshButton = createStyledButton("Refresh Users");
+        refreshButton.addActionListener(e -> refreshUserList());
+
+        JButton deleteUserButton = createStyledButton("Delete User");
+        deleteUserButton.addActionListener(e -> deleteUser());
+
+        JButton resetPasswordButton = createStyledButton("Reset Password");
+        resetPasswordButton.addActionListener(e -> resetPassword());
+
+        JPanel buttonPanel = new JPanel();
+        buttonPanel.setBackground(new Color(230, 230, 250)); // Light purple background
+        buttonPanel.add(refreshButton);
+        buttonPanel.add(deleteUserButton);
+        buttonPanel.add(resetPasswordButton);
+
+        panel.add(new JScrollPane(userTable), BorderLayout.CENTER);
+        panel.add(buttonPanel, BorderLayout.SOUTH);
+        return panel;
+    }
+
+    private JButton createStyledButton(String text) {
+        JButton button = new JButton(text);
+        button.setBackground(new Color(173, 216, 230)); // Light cyan background
+        button.setForeground(Color.DARK_GRAY);
+        button.setFocusPainted(false);
+        button.setFont(new Font("Arial", Font.BOLD, 12));
+        return button;
+    }
+
+    private void startAutoRefresh() {
+        autoRefreshTimer = new Timer(5000, new ActionListener() { // Refresh every 5 seconds
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                refreshFileList(); // Refresh file list
+                refreshUserList(); // Refresh user list
+            }
+        });
+        autoRefreshTimer.start(); // Start the timer
+    }
+
+    public void refreshFileList() {
+        SwingUtilities.invokeLater(() -> {
+            tableModel.setRowCount(0); // Clear the table
+            try (Statement stmt = dbConnection.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT filename, upload_date, owner FROM files")) {
+
+                while (rs.next()) {
+                    tableModel.addRow(new Object[]{
+                            rs.getString("filename"),
+                            rs.getTimestamp("upload_date"),
+                            rs.getString("owner"),
+                            "Saved"
+                    });
+                }
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(frame, "Error fetching files: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
+
+    public void refreshUserList() {
+        SwingUtilities.invokeLater(() -> {
+            userTableModel.setRowCount(0); // Clear the table
+            try (Statement stmt = dbConnection.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT username FROM users")) {
+
+                while (rs.next()) {
+                    userTableModel.addRow(new Object[]{rs.getString("username"), "Actions"});
+                }
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(frame, "Error fetching users: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
+
+    private void downloadSelectedFile() {
+        int selectedRow = fileTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No file selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String fileName = (String) tableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("SELECT file_data FROM files WHERE filename = ?")) {
+            ps.setString(1, fileName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    byte[] fileData = rs.getBytes("file_data");
+                    JFileChooser fileChooser = new JFileChooser();
+                    fileChooser.setSelectedFile(new java.io.File(fileName));
+                    if (fileChooser.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) {
+                        java.io.File saveFile = fileChooser.getSelectedFile();
+                        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(saveFile)) {
+                            fos.write(fileData);
+                            JOptionPane.showMessageDialog(frame, "File downloaded successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                        }
+                    }
+                } else {
+                    JOptionPane.showMessageDialog(frame, "File not found in the database.", "Error", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        } catch (SQLException | java.io.IOException e) {
+            JOptionPane.showMessageDialog(frame, "Error downloading file: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void deleteSelectedFile() {
+        int selectedRow = fileTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No file selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String fileName = (String) tableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("DELETE FROM files WHERE filename = ?")) {
+            ps.setString(1, fileName);
+            int rowsAffected = ps.executeUpdate();
+            if (rowsAffected > 0) {
+                JOptionPane.showMessageDialog(frame, "File deleted successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                refreshFileList();
+            } else {
+                JOptionPane.showMessageDialog(frame, "File not found.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error deleting file: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void deleteUser() {
+        int selectedRow = userTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No user selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String username = (String) userTableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("DELETE FROM users WHERE username = ?")) {
+            ps.setString(1, username);
+            int rowsAffected = ps.executeUpdate();
+            if (rowsAffected > 0) {
+                JOptionPane.showMessageDialog(frame, "User deleted successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                refreshUserList();
+            } else {
+                JOptionPane.showMessageDialog(frame, "User not found.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error deleting user: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void resetPassword() {
+        int selectedRow = userTable.getSelectedRow();
+        if (selectedRow == -1) {
+            JOptionPane.showMessageDialog(frame, "No user selected.", "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        String username = (String) userTableModel.getValueAt(selectedRow, 0);
+        try (PreparedStatement ps = dbConnection.prepareStatement("UPDATE users SET password = ? WHERE username = ?")) {
+            ps.setString(1, "defaultpassword"); // Replace with a secure default password logic
+            ps.setString(2, username);
+            int rowsAffected = ps.executeUpdate();
+            if (rowsAffected > 0) {
+                JOptionPane.showMessageDialog(frame, "Password reset successfully.", "Success", JOptionPane.INFORMATION_MESSAGE);
+            } else {
+                JOptionPane.showMessageDialog(frame, "User not found.", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error resetting password: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private Connection connectToDatabase() {
+        try {
+            String url = "jdbc:mysql://localhost:3306/file_transfer";
+            String user = "root";
+            String password = "H@mm1d2024";
+            return DriverManager.getConnection(url, user, password);
+        } catch (SQLException e) {
+            JOptionPane.showMessageDialog(frame, "Error connecting to the database: " + e.getMessage(), "Database Error", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
+    }
+}
+import java.io.Serializable;
+import java.sql.Timestamp;
+
+public class FileMetadata implements Serializable {
+    private static final long serialVersionUID = 1L; // Recommended for Serializable classes
+
+    private final int id;
+    private final String filename;
+    private final String uploadDate;
+    private final byte[] fileContent; // Can be used if you want to send file content
+    private final String owner;
+
+    // Main constructor for all fields
+    public FileMetadata(int id, String filename, String uploadDate, byte[] fileContent, String owner) {
+        this.id = id;
+        this.filename = filename;
+        this.uploadDate = uploadDate;
+        this.fileContent = fileContent;
+        this.owner = owner;
+    }
+
+    // Constructor for uploading files with content
+    public FileMetadata(String filename, String owner, byte[] fileContent) {
+        this.id = -1; // Default ID for temporary metadata
+        this.filename = filename;
+        this.uploadDate = new Timestamp(System.currentTimeMillis()).toString(); // Set current time as upload date
+        this.fileContent = fileContent;
+        this.owner = owner;
+    }
+
+    // Overloaded constructor for metadata without file content
+    public FileMetadata(String filename, String owner, Timestamp uploadDate) {
+        this.id = -1; // Default ID for temporary metadata
+        this.filename = filename;
+        this.uploadDate = uploadDate != null ? uploadDate.toString() : null;
+        this.fileContent = null; // No file content provided
+        this.owner = owner;
+    }
+
+    // Getter methods
+    public int getId() {
+        return id;
+    }
+
+    public String getFilename() {
+        return filename;
+    }
+
+    public String getUploadDate() {
+        return uploadDate;
+    }
+
+    public byte[] getFileContent() {
+        return fileContent;
+    }
+
+    public String getOwner() {
+        return owner;
+    }
+}
