@@ -5,7 +5,7 @@ FROM openjdk:21-jdk-slim
 WORKDIR /app
 
 # Étape 3 : Copier les fichiers nécessaires dans le conteneur
-COPY java-project /app/app.jar
+COPY MonProjet.jar /app/app.jar
 COPY mysql-connector-j-9.1.0 /app/mysql-connector-java.jar
 
 # Étape 4 : Spécifier la commande pour exécuter l'application
